@@ -16,21 +16,22 @@
 #include <fcntl.h>
 using namespace std;
 
-const int port = 8000;
+// const int port = 8080;
 const int max_event_num = 5;
 
 class Server {
 private:
+    int port;
     int sock_fd;
     // int accp_fd;
     int epoll_fd;
     struct sockaddr_in server_addr;
 public:
-    Server() : sock_fd(0) { memset( &server_addr, 0, sizeof( server_addr ) ); }
+    Server( int p ) : sock_fd(0), port(p) { memset( &server_addr, 0, sizeof( server_addr ) ); }
     ~Server() { close( sock_fd ); }
     int accept_connection();
     int decode_request( int accp_fd );
-    int send_html( int accp_fd );
+    int send_html( int accp_fd, const string & filename );
     void addfd( bool oneshot );
     int setnonblocking();
 };
@@ -107,35 +108,35 @@ int Server::decode_request( int accp_fd ) {
     if( !r ) {
         cout << "browser exit.\n";
         close( accp_fd );
-        exit(-1);
+        return 0;
     }
     cout << "buf = \n" << buf << endl;
 
-    char method[1024] = {0}, uri[1024] = {0}, version[1024] = {0};
-    sscanf( buf, "%s %s %s", method, uri, version );
-    /* string method, uri, version;
+    /* char method[1024] = {0}, uri[1024] = {0}, version[1024] = {0};
+    sscanf( buf, "%s %s %s", method, uri, version ); */
+    string method, uri, version;
     stringstream ss;
-    ss << uri;
+    ss << buf;
     ss >> method >> uri >> version;
     cout << "method = " << method << endl;
     cout << "uri = " << uri << endl;
-    cout << "version = " << version << endl; */
+    cout << "version = " << version << endl << endl;
 
     // sleep(1);
 
-    if( !strcmp( method, "GET" ) ) {  //为GET
-        if( !strcmp( "/", uri ) || !strcmp( "/homepage.html", uri ) ) {
-            send_html( accp_fd );
-        } else if( strstr( uri, ".jpg" ) ) {
+    if( method == "GET" ) {  //为GET
+        if( uri == "/" || uri == "/index.html" ) {
+            send_html( accp_fd, "index.html" );
+        } else if( uri.find( ".jpg" ) != string::npos ) {
             string status( "HTTP/1.1 200 OK\r\n" );
             string header( "Server: niliushall\r\nContent-Type: image/jpg;charset=utf-8\r\n" );
             string body, t;
             
             string filename( uri );
-            ifstream fin( filename.substr(1) );
+            ifstream fin( filename.substr(1) );  //除去'/'
             if( !fin.is_open() ) {
                 cout << "file " << uri << " can't open.\n";
-                exit(-1);
+                // exit(-1);
             }
             
             //文件以getline读取，不能直接fin >> t, 否则只读空格之前的
@@ -148,22 +149,28 @@ int Server::decode_request( int accp_fd ) {
             send( accp_fd, status.c_str(), status.size(), 0 );
             fin.close();
             // close( accp_fd );
+        } else if( uri.find( ".html" ) != string::npos ) {
+            send_html( accp_fd, uri.substr(1) );
+        } else if( uri.find( ".ico" ) != string::npos ) {
+            //
+        } else {
+            cout << "不支持该类型文件\n";
         }
     }
 }
 
-int Server::send_html( int accp_fd ) {
-    string status( "HTTP/1.1 200 OK\r\n" );
+int Server::send_html( int accp_fd, const string & filename ) {
+string status( "HTTP/1.1 200 OK\r\n" );
     string header( "Server: niliushall\r\nContent-Type: text/html;charset=utf-8\r\n\r\n" );
     string body, t;
 
-    ifstream in( "homepage.html" );
+    ifstream in( filename );
     while( getline( in, t ) ) {
         body += '\n';
         body += t;
     }
     in.close();
-    
+cout << "\nhtml:\n" << body << endl << endl;
     /* send第二个参数只能是c类型字符串，不能使用string */
     send( accp_fd, status.c_str(), status.size(), 0 );
     send( accp_fd, header.c_str(), header.size(), 0 );
@@ -190,8 +197,14 @@ int Server::setnonblocking() {
     return old_option;
 }
 
-int main() {
-    Server test;
+int main( int argc, char **argv ) {
+    if( argc != 2 ) {
+        cout << "Usage : ./a.out + port\n";
+        return -1;
+    }
+
+    int port = atoi( argv[1] );
+    Server test( port );
     test.accept_connection();
     // test.decode_request();
 }
