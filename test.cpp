@@ -1,4 +1,4 @@
-/* 采用 epoll+多线程 实现，可使用GET，可传输html、jpg */
+/* 采用 epoll+多线程 实现，可使用GET，可传输html、jpg、png、mp3 */
 
 #include <iostream>
 #include <sstream>
@@ -15,9 +15,10 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/sendfile.h>
 using namespace std;
 
-const int max_event_num = 5;
+const int max_event_num = 20;
 
 class Server {
 private:
@@ -93,7 +94,7 @@ int Server::accept_connection() {
         ret = epoll_wait( epoll_fd, events, max_event_num, -1 );
         if( ret < 0 ) {
             cout << "epoll_wait error, line: " << __LINE__ << endl;
-            exit(-1);
+            return -1;
         }
         for( int i = 0; i < ret; i++ ) {
             int fd = events[i].data.fd;
@@ -103,7 +104,7 @@ int Server::accept_connection() {
                 int conn_fd = accept( fd, (struct sockaddr *)&client_addr, &client_addr_size );
                 if( conn_fd < 0 ) {
                     cout << "accept error, line: " << __LINE__ << endl;
-                    exit(-1);
+                    return -1;
                 }
                 addfd(epoll_fd, true, conn_fd);
 // cout << "add\n";
@@ -118,29 +119,33 @@ int Server::accept_connection() {
     }
 
     close( sock_fd );
-
+// cout << "exit\n";
     return 0;
 }
 
 void * Server::decode_request( void * conn_fd ) {
     char buf[1024] = {0};
     int accp_fd = *(int *)conn_fd;
+
     int r = recv( accp_fd, buf, 1024, 0 );
+// cout << "r = " << r << endl;
     if( !r ) {
         cout << "browser exit.\n";
         close( accp_fd );
         // removefd( epoll_fd, accp_fd );
         return 0;
     }
-    cout << "request = \n" << buf << endl;
+    // cout << "request = \n" << buf << endl;
 
     string method, uri, version;
     stringstream ss;
+    ss.clear();
     ss << buf;
     ss >> method >> uri >> version;
-    /* cout << "method = " << method << endl;
+
+    cout << "method = " << method << endl;
     cout << "uri = " << uri << endl;
-    cout << "version = " << version << endl << endl; */
+    cout << "version = " << version << endl << endl;
 
     // sleep(1);
 
@@ -153,6 +158,26 @@ void * Server::decode_request( void * conn_fd ) {
             send_file( accp_fd, uri.substr(1), "text/html" );
         } else if( uri.find( ".ico" ) != string::npos ) {
             send_file( accp_fd, uri.substr(1), "image/x-icon" );
+        } else if( uri.find( ".js" ) != string::npos ) {
+            send_file( accp_fd, uri.substr(1), "yexy/javascript" );
+        } else if( uri.find( ".css" ) != string::npos ) {
+            send_file( accp_fd, uri.substr(1), "text/css" );
+        } else if( uri.find( ".mp3" ) != string::npos ) {
+            /* int filefd = open( uri.substr(1).c_str(), O_RDONLY );
+            struct stat stat_buf;
+            fstat( filefd, &stat_buf );
+            stringstream ss;
+            ss << stat_buf.st_size;
+            string num;
+            ss >> num;
+            string status( "HTTP/1.1 200 OK\r\n" );
+            string header = "Server: niliushall\r\nContent-Type: audio/mp3\r\nContent-Length: "
+                             + num + "\r\n";
+            status += header;
+            send( accp_fd, status.c_str(), status.size(), 0 );
+            sendfile( accp_fd, filefd, NULL, stat_buf.st_size );
+            close( filefd ); */
+            send_file( accp_fd, uri.substr(1), "audio/mp3" );
         } else {
             string status( "HTTP/1.1 404 Not Found\r\n" );
             string header( "Server: niliushall\r\nContent-Type: text/plain;charset=utf-8\r\n\r\n" );
@@ -179,17 +204,19 @@ int Server::send_file( int accp_fd, const string & filename, const string & type
         body += t;
     }
     in.close();
-// cout << "\nhtml:\n" << body << endl << endl;
-    /* send第二个参数只能是c类型字符串，不能使用string */
+// cout << "\nsend:\n" << body << endl << endl;
+    // send第二个参数只能是c类型字符串，不能使用string
     status += header + body;
     send( accp_fd, status.c_str(), status.size(), 0 );
-    
+cout << filename << " send finish to " << accp_fd << endl;
+close( accp_fd );
     return 0;
 }
 
 int Server::send_400( int accp_fd ) {
-    string response = "HTTP/1.1 400 METHOD ERROR\r\nServer: niliushall\r\nContent-Type: text/plain";
+    string response = "HTTP/1.1 200 METHOD ERROR\r\nServer: niliushall\r\nContent-Type: text/plain";
     send( accp_fd, response.c_str(), response.size(), 0 );
+    close( accp_fd );
 }
 
 int main( int argc, char **argv ) {
