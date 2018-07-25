@@ -1,4 +1,4 @@
-/* 采用epoll实现，可传输html、jpg */
+/* 采用epoll实现，可使用GET，可传输html、jpg */
 
 #include <iostream>
 #include <sstream>
@@ -16,14 +16,12 @@
 #include <fcntl.h>
 using namespace std;
 
-// const int port = 8080;
 const int max_event_num = 5;
 
 class Server {
 private:
     int port;
     int sock_fd;
-    // int accp_fd;
     int epoll_fd;
     struct sockaddr_in server_addr;
 public:
@@ -32,8 +30,9 @@ public:
     int accept_connection();
     int decode_request( int accp_fd );
     int send_html( int accp_fd, const string & filename );
-    void addfd( bool oneshot );
-    int setnonblocking();
+    void addfd( bool oneshot, int fd );
+    void removefd( int fd );
+    int setnonblocking( int fd );
 };
 
 int Server::accept_connection() {
@@ -65,7 +64,7 @@ int Server::accept_connection() {
         cout << "epoll_create error, line: " << __LINE__ << endl;
         exit(-1);
     }
-    addfd( false );
+    addfd( false, sock_fd );
 
     while( true ) {
         ret = epoll_wait( epoll_fd, events, max_event_num, -1 );
@@ -73,7 +72,6 @@ int Server::accept_connection() {
             cout << "epoll_wait error, line: " << __LINE__ << endl;
             exit(-1);
         }
-
         for( int i = 0; i < ret; i++ ) {
             int fd = events[i].data.fd;
             if( fd == sock_fd ) {  //新连接
@@ -84,43 +82,41 @@ int Server::accept_connection() {
                     cout << "accept error, line: " << __LINE__ << endl;
                     exit(-1);
                 }
-                addfd(true);
-                decode_request( conn_fd );
-                close( conn_fd );
+                addfd(true, conn_fd);
+// cout << "add\n";
+               /*  decode_request( fd );
+                close( fd ); */
             } else if( events[i].events & EPOLLIN ) {
-                //
+// cout << "\nEPOLLIN\n";
+                decode_request( fd );
+                close( fd );
+            } else {
+                cout << "\nother\n";
             }
         }
     }
-
-    /* struct sockaddr_in client_addr;
-    socklen_t client_addr_size = sizeof( client_addr );
-    accp_fd = accept( sock_fd, (struct sockaddr *)&client_addr, &client_addr_size ); */
 
     return 0;
 }
 
 int Server::decode_request( int accp_fd ) {
     char buf[1024] = {0};
-    
     int r = recv( accp_fd, buf, 1024, 0 );
-    // cout << "r = " << r << endl;
     if( !r ) {
         cout << "browser exit.\n";
         close( accp_fd );
+        removefd( accp_fd );
         return 0;
     }
-    cout << "buf = \n" << buf << endl;
+    cout << "request = \n" << buf << endl;
 
-    /* char method[1024] = {0}, uri[1024] = {0}, version[1024] = {0};
-    sscanf( buf, "%s %s %s", method, uri, version ); */
     string method, uri, version;
     stringstream ss;
     ss << buf;
     ss >> method >> uri >> version;
-    cout << "method = " << method << endl;
+    /* cout << "method = " << method << endl;
     cout << "uri = " << uri << endl;
-    cout << "version = " << version << endl << endl;
+    cout << "version = " << version << endl << endl; */
 
     // sleep(1);
 
@@ -136,7 +132,7 @@ int Server::decode_request( int accp_fd ) {
             ifstream fin( filename.substr(1) );  //除去'/'
             if( !fin.is_open() ) {
                 cout << "file " << uri << " can't open.\n";
-                // exit(-1);
+                return -1;
             }
             
             //文件以getline读取，不能直接fin >> t, 否则只读空格之前的
@@ -148,13 +144,34 @@ int Server::decode_request( int accp_fd ) {
             status += header + body;
             send( accp_fd, status.c_str(), status.size(), 0 );
             fin.close();
-            // close( accp_fd );
         } else if( uri.find( ".html" ) != string::npos ) {
             send_html( accp_fd, uri.substr(1) );
         } else if( uri.find( ".ico" ) != string::npos ) {
-            //
+            string status( "HTTP/1.1 200 OK\r\n" );
+            string header( "Server: niliushall\r\nContent-Type: image/jpg;charset=utf-8\r\n" );
+            string body, t;
+            
+            string filename( uri );
+            ifstream fin( filename.substr(1) );  //除去'/'
+            if( !fin.is_open() ) {
+                cout << "file " << uri << " can't open.\n";
+                return -1;
+            }
+            
+            //文件以getline读取，不能直接fin >> t, 否则只读空格之前的
+            while( getline( fin, t ) ) {
+                body += '\n';
+                body += t;
+            }
+
+            status += header + body;
+            send( accp_fd, status.c_str(), status.size(), 0 );
+            fin.close();
         } else {
-            cout << "不支持该类型文件\n";
+            string status( "HTTP/1.1 404 Not Found\r\n" );
+            string header( "Server: niliushall\r\nContent-Type: text/plain;charset=utf-8\r\n\r\n" );
+            status += header;
+            send( accp_fd, status.c_str(), status.size(), 0 );
         }
     }
 }
@@ -170,7 +187,7 @@ string status( "HTTP/1.1 200 OK\r\n" );
         body += t;
     }
     in.close();
-cout << "\nhtml:\n" << body << endl << endl;
+// cout << "\nhtml:\n" << body << endl << endl;
     /* send第二个参数只能是c类型字符串，不能使用string */
     send( accp_fd, status.c_str(), status.size(), 0 );
     send( accp_fd, header.c_str(), header.size(), 0 );
@@ -179,21 +196,26 @@ cout << "\nhtml:\n" << body << endl << endl;
     return 0;
 }
 
-void Server::addfd( bool oneshot ) {
+void Server::addfd( bool oneshot, int fd ) {
     epoll_event event;
-    event.data.fd = sock_fd;
+    event.data.fd = fd;
     event.events = EPOLLIN | EPOLLET;
     if( oneshot ) {
         event.events |= EPOLLONESHOT;
     }
-    epoll_ctl( epoll_fd, EPOLL_CTL_ADD, sock_fd, &event );
-    setnonblocking( );
+    epoll_ctl( epoll_fd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );
 }
 
-int Server::setnonblocking() {
+void Server::removefd( int fd ) {
+    epoll_ctl( epoll_fd, EPOLL_CTL_DEL, fd, 0 );
+    close( fd );
+}
+
+int Server::setnonblocking( int fd ) {
     int old_option = fcntl( sock_fd, F_GETFL );
     int new_option = old_option | O_NONBLOCK;
-    fcntl( sock_fd, F_SETFL, new_option );
+    fcntl( fd, F_SETFL, new_option );
     return old_option;
 }
 
@@ -206,5 +228,4 @@ int main( int argc, char **argv ) {
     int port = atoi( argv[1] );
     Server test( port );
     test.accept_connection();
-    // test.decode_request();
 }
