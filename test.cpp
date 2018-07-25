@@ -1,4 +1,4 @@
-/* 采用epoll实现，可使用GET，可传输html、jpg */
+/* 采用 epoll+多线程 实现，可使用GET，可传输html、jpg */
 
 #include <iostream>
 #include <sstream>
@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <pthread.h>
 using namespace std;
 
 const int max_event_num = 5;
@@ -28,12 +29,34 @@ public:
     Server( int p ) : sock_fd(0), port(p) { memset( &server_addr, 0, sizeof( server_addr ) ); }
     ~Server() { close( sock_fd ); }
     int accept_connection();
-    int decode_request( int accp_fd );
-    int send_html( int accp_fd, const string & filename );
-    void addfd( bool oneshot, int fd );
-    void removefd( int fd );
-    int setnonblocking( int fd );
+    static void * decode_request( void * accp_fd );
+    static int send_file( int accp_fd, const string & filename, const string & type );
+    static int send_400( int accp_fd );
 };
+
+int setnonblocking( int fd ) {
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+
+void addfd( int epoll_fd, bool oneshot, int fd ) {
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET;
+    if( oneshot ) {
+        event.events |= EPOLLONESHOT;
+    }
+    epoll_ctl( epoll_fd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );
+}
+
+void removefd( int epollfd, int fd ) {
+    epoll_ctl( epollfd, EPOLL_CTL_DEL, fd, 0 );
+    close( fd );
+}
 
 int Server::accept_connection() {
     server_addr.sin_family = AF_INET;
@@ -64,7 +87,7 @@ int Server::accept_connection() {
         cout << "epoll_create error, line: " << __LINE__ << endl;
         exit(-1);
     }
-    addfd( false, sock_fd );
+    addfd( epoll_fd, false, sock_fd );
 
     while( true ) {
         ret = epoll_wait( epoll_fd, events, max_event_num, -1 );
@@ -82,30 +105,31 @@ int Server::accept_connection() {
                     cout << "accept error, line: " << __LINE__ << endl;
                     exit(-1);
                 }
-                addfd(true, conn_fd);
+                addfd(epoll_fd, true, conn_fd);
 // cout << "add\n";
-               /*  decode_request( fd );
-                close( fd ); */
             } else if( events[i].events & EPOLLIN ) {
 // cout << "\nEPOLLIN\n";
-                decode_request( fd );
-                close( fd );
+                pthread_t thread;
+                pthread_create( &thread, NULL, decode_request, (void *)&fd );
             } else {
                 cout << "\nother\n";
             }
         }
     }
 
+    close( sock_fd );
+
     return 0;
 }
 
-int Server::decode_request( int accp_fd ) {
+void * Server::decode_request( void * conn_fd ) {
     char buf[1024] = {0};
+    int accp_fd = *(int *)conn_fd;
     int r = recv( accp_fd, buf, 1024, 0 );
     if( !r ) {
         cout << "browser exit.\n";
         close( accp_fd );
-        removefd( accp_fd );
+        // removefd( epoll_fd, accp_fd );
         return 0;
     }
     cout << "request = \n" << buf << endl;
@@ -122,63 +146,31 @@ int Server::decode_request( int accp_fd ) {
 
     if( method == "GET" ) {  //为GET
         if( uri == "/" || uri == "/index.html" ) {
-            send_html( accp_fd, "index.html" );
-        } else if( uri.find( ".jpg" ) != string::npos ) {
-            string status( "HTTP/1.1 200 OK\r\n" );
-            string header( "Server: niliushall\r\nContent-Type: image/jpg;charset=utf-8\r\n" );
-            string body, t;
-            
-            string filename( uri );
-            ifstream fin( filename.substr(1) );  //除去'/'
-            if( !fin.is_open() ) {
-                cout << "file " << uri << " can't open.\n";
-                return -1;
-            }
-            
-            //文件以getline读取，不能直接fin >> t, 否则只读空格之前的
-            while( getline( fin, t ) ) {
-                body += '\n';
-                body += t;
-            }
-
-            status += header + body;
-            send( accp_fd, status.c_str(), status.size(), 0 );
-            fin.close();
+            send_file( accp_fd, "index.html", "text/html" );
+        } else if( uri.find( ".jpg" ) != string::npos || uri.find( ".png" ) != string::npos ) {
+            send_file( accp_fd, uri.substr(1), "image/jpg" );
         } else if( uri.find( ".html" ) != string::npos ) {
-            send_html( accp_fd, uri.substr(1) );
+            send_file( accp_fd, uri.substr(1), "text/html" );
         } else if( uri.find( ".ico" ) != string::npos ) {
-            string status( "HTTP/1.1 200 OK\r\n" );
-            string header( "Server: niliushall\r\nContent-Type: image/jpg;charset=utf-8\r\n" );
-            string body, t;
-            
-            string filename( uri );
-            ifstream fin( filename.substr(1) );  //除去'/'
-            if( !fin.is_open() ) {
-                cout << "file " << uri << " can't open.\n";
-                return -1;
-            }
-            
-            //文件以getline读取，不能直接fin >> t, 否则只读空格之前的
-            while( getline( fin, t ) ) {
-                body += '\n';
-                body += t;
-            }
-
-            status += header + body;
-            send( accp_fd, status.c_str(), status.size(), 0 );
-            fin.close();
+            send_file( accp_fd, uri.substr(1), "image/x-icon" );
         } else {
             string status( "HTTP/1.1 404 Not Found\r\n" );
             string header( "Server: niliushall\r\nContent-Type: text/plain;charset=utf-8\r\n\r\n" );
             status += header;
             send( accp_fd, status.c_str(), status.size(), 0 );
         }
+    } else if( method == "POST" ) {
+        
+    } else {
+        send_400( accp_fd );
     }
+    close( accp_fd );
 }
 
-int Server::send_html( int accp_fd, const string & filename ) {
-string status( "HTTP/1.1 200 OK\r\n" );
-    string header( "Server: niliushall\r\nContent-Type: text/html;charset=utf-8\r\n\r\n" );
+int Server::send_file( int accp_fd, const string & filename, const string & type ) {
+    //? header为什么不能是\r\n\r\n
+    string status( "HTTP/1.1 200 OK\r\n" );
+    string header = "Server: niliushall\r\nContent-Type: " + type + ";charset=utf-8\r\n";
     string body, t;
 
     ifstream in( filename );
@@ -189,34 +181,15 @@ string status( "HTTP/1.1 200 OK\r\n" );
     in.close();
 // cout << "\nhtml:\n" << body << endl << endl;
     /* send第二个参数只能是c类型字符串，不能使用string */
+    status += header + body;
     send( accp_fd, status.c_str(), status.size(), 0 );
-    send( accp_fd, header.c_str(), header.size(), 0 );
-    send( accp_fd, body.c_str(), body.size(), 0 );
-
+    
     return 0;
 }
 
-void Server::addfd( bool oneshot, int fd ) {
-    epoll_event event;
-    event.data.fd = fd;
-    event.events = EPOLLIN | EPOLLET;
-    if( oneshot ) {
-        event.events |= EPOLLONESHOT;
-    }
-    epoll_ctl( epoll_fd, EPOLL_CTL_ADD, fd, &event );
-    setnonblocking( fd );
-}
-
-void Server::removefd( int fd ) {
-    epoll_ctl( epoll_fd, EPOLL_CTL_DEL, fd, 0 );
-    close( fd );
-}
-
-int Server::setnonblocking( int fd ) {
-    int old_option = fcntl( sock_fd, F_GETFL );
-    int new_option = old_option | O_NONBLOCK;
-    fcntl( fd, F_SETFL, new_option );
-    return old_option;
+int Server::send_400( int accp_fd ) {
+    string response = "HTTP/1.1 400 METHOD ERROR\r\nServer: niliushall\r\nContent-Type: text/plain";
+    send( accp_fd, response.c_str(), response.size(), 0 );
 }
 
 int main( int argc, char **argv ) {
