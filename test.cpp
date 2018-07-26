@@ -16,6 +16,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/sendfile.h>
+#include <sys/wait.h>
+
 using namespace std;
 
 const int max_event_num = 20;
@@ -128,14 +130,12 @@ void * Server::decode_request( void * conn_fd ) {
     int accp_fd = *(int *)conn_fd;
 
     int r = recv( accp_fd, buf, 1024, 0 );
-// cout << "r = " << r << endl;
     if( !r ) {
         cout << "browser exit.\n";
         close( accp_fd );
         // removefd( epoll_fd, accp_fd );
         return 0;
     }
-    // cout << "request = \n" << buf << endl;
 
     string method, uri, version;
     stringstream ss;
@@ -146,6 +146,8 @@ void * Server::decode_request( void * conn_fd ) {
     cout << "method = " << method << endl;
     cout << "uri = " << uri << endl;
     cout << "version = " << version << endl << endl;
+
+    cout << "request = ------\n" << buf << "\n------------" << endl;
 
     // sleep(1);
 
@@ -163,20 +165,6 @@ void * Server::decode_request( void * conn_fd ) {
         } else if( uri.find( ".css" ) != string::npos ) {
             send_file( accp_fd, uri.substr(1), "text/css" );
         } else if( uri.find( ".mp3" ) != string::npos ) {
-            /* int filefd = open( uri.substr(1).c_str(), O_RDONLY );
-            struct stat stat_buf;
-            fstat( filefd, &stat_buf );
-            stringstream ss;
-            ss << stat_buf.st_size;
-            string num;
-            ss >> num;
-            string status( "HTTP/1.1 200 OK\r\n" );
-            string header = "Server: niliushall\r\nContent-Type: audio/mp3\r\nContent-Length: "
-                             + num + "\r\n";
-            status += header;
-            send( accp_fd, status.c_str(), status.size(), 0 );
-            sendfile( accp_fd, filefd, NULL, stat_buf.st_size );
-            close( filefd ); */
             send_file( accp_fd, uri.substr(1), "audio/mp3" );
         } else {
             string status( "HTTP/1.1 404 Not Found\r\n" );
@@ -185,7 +173,22 @@ void * Server::decode_request( void * conn_fd ) {
             send( accp_fd, status.c_str(), status.size(), 0 );
         }
     } else if( method == "POST" ) {
-        
+        if( uri.find( "adder" ) != string::npos ) {
+            string filename = uri.substr(1);
+            char *tmp = buf;
+            int len, a, b;
+            char *l = strstr( tmp, "Content-Length:" );
+            sscanf( l, "Content-Length: %d", &len );
+            len = strlen( tmp ) - len;
+            tmp += len;
+            sscanf( tmp, "a=%d&b=%d", &a, &b );
+            sprintf(tmp, "%d+%d,%d", a, b, accp_fd);
+            if( fork() == 0 ) {
+                // dup2( accp_fd, STDOUT_FILENO );
+                execl( filename.c_str(), tmp );
+            }
+            wait( NULL );
+        }
     } else {
         send_400( accp_fd );
     }
@@ -208,8 +211,8 @@ int Server::send_file( int accp_fd, const string & filename, const string & type
     // send第二个参数只能是c类型字符串，不能使用string
     status += header + body;
     send( accp_fd, status.c_str(), status.size(), 0 );
-cout << filename << " send finish to " << accp_fd << endl;
-close( accp_fd );
+// cout << filename << " send finish to " << accp_fd << endl;
+    close( accp_fd );
     return 0;
 }
 
