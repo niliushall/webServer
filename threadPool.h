@@ -112,7 +112,7 @@ void ThreadPool<T>::run() {
             queue_cond_locker.wait();
         } else {
             task->doit();
-            // delete task;
+            delete task;  //task指向的对象在WebServer中new出来，因此需要手动delete
         }
     }
 }

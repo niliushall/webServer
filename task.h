@@ -28,9 +28,7 @@ private:
 public:
     Task() {}
     Task(int fd) : accp_fd(fd) {}
-    // ~Task() { cout << "~Task()\n"; close(accp_fd); }
-    // ~Task() { cout << "~Task()\n"; }
-
+    ~Task() { close( accp_fd ); }
 
     void doit();
     const string construct_header( const int num, const string & info,
@@ -40,7 +38,6 @@ public:
     int deal_get( const string & uri );
     int deal_post( const string & uri, char *buf );
     int get_size( const string & filename );
-    // void send_404();
 };
 
 void Task::doit() {
@@ -81,7 +78,8 @@ void Task::doit() {
         }
         break;  // 只要处理完就退出循环，避免浏览器一直处于pending状态
     }
-    close( accp_fd );
+    // close( accp_fd );  // 任务完成直接close，不能在析构函数close(如果不delete task的话，
+                          // 不delete task不够条用析构函数)
 }
 
 const string Task::construct_header( const int num, 
@@ -137,7 +135,7 @@ int Task::deal_post( const string & uri, char *buf ) {
 int Task::send_file( const string & filename, const string & type, 
                                 const int num, const string & info ) {
     string header = construct_header( num, info, type );
-// cout << "header : " << header << endl;
+
     // send第二个参数只能是c类型字符串，不能使用string
     send( accp_fd, header.c_str(), header.size(), 0 );
 
@@ -157,14 +155,6 @@ int Task::send_file( const string & filename, const string & type,
 cout << filename << " send finish to " << accp_fd << endl;
     return 0;
 }
-
-/* void Task::send_404() {
-    string header = construct_header( 404, "Not Found", "text/html" );
-    send( accp_fd, header.c_str(), header.size(), 0 );
-    int fd = open( "404.html", O_RDONLY );
-    sendfile( accp_fd, fd, NULL, get_size( "404.html" ) );
-    close( fd );
-} */
 
 int Task::get_size( const string & filename ) {
     struct stat filestat;

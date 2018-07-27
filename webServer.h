@@ -67,14 +67,13 @@ int WebServer::run() {
 
     ThreadPool<Task> threadpool(20);
 
-    /*ThreadPool< Task > *threadpool;
+    /* ThreadPool< Task > *threadpool;
     try {
-        threadpool = new ThreadPool<Task>;
+        threadpool = new ThreadPool<Task>(20);
     } catch(...) {
         cout << "init threadpool error\n";
         return -1;
-    }*/
-    
+    } */
 
     while(1) {
         struct sockaddr_in client_addr;
@@ -84,8 +83,9 @@ int WebServer::run() {
             cout << "accept error, line: " << __LINE__ << endl;
             exit(-1);
         }
-cout << "conn_fd = " << conn_fd << endl;
-        Task *task = new Task(conn_fd);
+        Task *task = new Task(conn_fd);  // 不能使用Task task(conn_fd),
+                                         // 需要使用new，否则造成线程函数还没运行完，Task就被析构
+                                         // 在threadpool中，task结束后，进行delete
         threadpool.append( task );
     }
     return 0;

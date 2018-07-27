@@ -1,4 +1,8 @@
-// #include "task.h"
+/* 
+   采用线程池实现，含有GET、POST， 可以发送html、picture、MP3、js、css、ico
+   服务器可以稳定运行
+ */
+
 #include "webServer.h"
 #include "task.h"
 
