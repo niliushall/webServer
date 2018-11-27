@@ -1,32 +1,44 @@
 #include "task.h"
 
+void removefd( int epollfd, int fd ) {
+    epoll_ctl( epollfd, EPOLL_CTL_DEL, fd, 0 );
+    close( fd );
+}
+
+void reset_oneshot( int epoll_fd, int fd ) {
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    epoll_ctl( epoll_fd, EPOLL_CTL_MOD, fd, &event );
+}
+
 void Task::doit() {
     char buf[ buffer_size ] = {0};
 
     while( int r = recv( accp_fd, buf, 1024, 0 ) ) {
         if( !r ) {
-            cout << "browser exit.\n";
-            return;
+            cout << " browser exit.\n";
+            break;
         } else if( r < 0 ) {  // 如果接收出错则继续接收数据
             continue;
         }
 
-        string method, uri, version;
-        stringstream ss;
-        ss << buf;
-        ss >> method >> uri >> version;  // 解析HTTP请求第一行
+        int start = 0;
+        char method[5], uri[100], version[10];
+        sscanf( buf, "%s %s %s", method, uri, version );
 
-        cout << "method = " << method << endl;  // 方法：GET、POST
-        cout << "uri = " << uri << endl;  // URL，请求文件地址
-        cout << "version = " << version << endl << endl;  // HTTP版本
+        if( char *tmp = strstr( buf, "Range:" ) ) {
+            tmp += 13;
+            sscanf( tmp, "%d", &start );
+        }
 
-        if( method == "GET" ) {  // 为GET
-            deal_get( uri );
-        } else if( method == "POST" ) {  // 为POST
+        if( !strcmp( method, "GET" ) ) {  // 为GET
+            deal_get( uri, start );
+        } else if( !strcmp( method, "POST" ) ) {  // 为POST
             deal_post( uri, buf );
         } else {
-            string header = construct_header( 501, "Not Implemented", "text/plain" );
-            send( accp_fd, header.c_str(), header.size(), 0 );
+            const char *header = "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain;charset=utf-8\r\n\r\n";
+            send( accp_fd, header, strlen(header), 0 );
         }
         break;  // 只要处理完就退出循环，避免浏览器一直处于pending状态
     }
@@ -34,33 +46,27 @@ void Task::doit() {
                           // 不delete task不够条用析构函数)
 }
 
-// num为状态码，info为状态描述，type为文件response类型
-const string Task::construct_header( const int num, 
-                        const string & info, const string & type ) {
-    string response = "HTTP/1.1 " + to_string(num) + " " + info + "\r\n";
-    response += "Server: niliushall\r\nContent-Type: " + type + ";charset=utf-8\r\n\r\n";
-    return response;
-}
-
-int Task::deal_get( const string & uri ) {
+int Task::deal_get( const string & uri, int start ) {
     string filename = uri.substr(1);
 
     if( uri == "/" || uri == "/index.html" ) {
-        send_file( "index.html", "text/html" );
+        send_file( "index.html", "text/html", start );
     } else if( uri.find( ".jpg" ) != string::npos || uri.find( ".png" ) != string::npos ) {
-        send_file( filename, "image/jpg" );
+        send_file( filename, "image/jpg", start );
     } else if( uri.find( ".html" ) != string::npos ) {
-        send_file( filename, "text/html" );
+        send_file( filename, "text/html", start );
     } else if( uri.find( ".ico" ) != string::npos ) {
-        send_file( filename, "image/x-icon" );
+        send_file( filename, "image/x-icon", start );
     } else if( uri.find( ".js" ) != string::npos ) {
-        send_file( filename, "yexy/javascript" );
+        send_file( filename, "yexy/javascript", start );
     } else if( uri.find( ".css" ) != string::npos ) {
-        send_file( filename, "text/css" );
+        send_file( filename, "text/css", start );
     } else if( uri.find( ".mp3" ) != string::npos ) {
-        send_file( filename, "audio/mp3" );
+        send_file( filename, "audio/mp3", start );
+    } else if( uri.find( ".mp4" ) != string::npos ) {
+        send_file( filename, "audio/mp4", start );
     } else {
-        send_file( "404.html", "text/html", 404, "Not Found" );
+        send_file( filename, "text/plain", start );
     }
 }
 
@@ -83,31 +89,53 @@ int Task::deal_post( const string & uri, char *buf ) {
         }
         wait( NULL );  // 等待子进程结束
     } else {
-        send_file( "404.html", "text/html", 404, "Not Found" );
+        send_file( "html/404.html", "text/html", 0, 404, "Not Found" );
     }
 }
 
 // type对应response的Content-Type，num为状态码，info为状态描述
-int Task::send_file( const string & filename, const string & type, 
-                                const int num, const string & info ) {
-    string header = construct_header( num, info, type );
-
-    // send第二个参数只能是c类型字符串，不能使用string
-    send( accp_fd, header.c_str(), header.size(), 0 );
-
+int Task::send_file( const string & filename, const char *type, 
+                            int start, const int num, const char *info ) {
     struct stat filestat;
     int ret = stat( filename.c_str(), &filestat );
     if( ret < 0 || !S_ISREG( filestat.st_mode ) ) {  // 打开文件出错或没有该文件
         cout << "file not found : " << filename << endl;
-        send_file( "404.html", "text/html", 404, "Not Found" );
+        send_file( "html/404.html", "text/html", 0, 404, "Not Found" );
         return -1;
     }
 
-    if( !filename.empty() ) {
-        int fd = open( filename.c_str(), O_RDONLY );
-        sendfile( accp_fd, fd, NULL, get_size( filename ) );
-        close( fd );
+    char header[200];
+    sprintf( header, "HTTP/1.1 %d %s\r\nServer: niliushall\r\nContent-Length: %d\r\nContent-Type: %s;charset:utf-8\r\n\r\n", num, info, int(filestat.st_size - start), type );
+
+    // send第二个参数只能是c类型字符串，不能使用string
+    send( accp_fd, header, strlen(header), 0 );
+
+    int fd = open( filename.c_str(), O_RDONLY );
+    int sum = start;
+
+    while( sum < filestat.st_size ) {
+        off_t t = sum;
+
+        int r = sendfile( accp_fd, fd, &t, filestat.st_size );
+
+        if( r < 0 ) {
+            printf("errno = %d, r = %d\n", errno, r);
+            // perror("sendfile : ");
+            if( errno == EAGAIN ) {
+                printf("errno is EAGAIN\n");
+                // reset_oneshot( epoll_fd, accp_fd );
+                continue;
+            } else {
+                perror( "sendfile " );
+                close( fd );
+                break;
+            }
+        } else {
+            sum += r;
+        }
     }
+    close( fd );
+// printf( "sendfile finish, %d\n", accp_fd );
     return 0;
 }
 
