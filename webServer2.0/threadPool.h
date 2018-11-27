@@ -116,6 +116,7 @@ void ThreadPool<T>::run() {
         if( !task ) {
             queue_cond_locker.wait();  // 队列为空，线程开始等待
         } else {
+// printf("a thread start work\n");
             task->doit();  // 开始执行任务
             delete task;  //task指向的对象在WebServer中new出来，因此需要手动delete
         }
